@@ -121,11 +121,7 @@ fp = (-81.0345025, 33.9932168)
 with rasterio.open("output.tin.tif") as src:
     print("file loaded")
     transform = src.transform
-    start = (transform.c, transform.f)
-    bounds = src.bounds
     crs_start =  transform * (0,0)
-    size = (transform.a, transform.e)
-    print(start, size)
     elevation_data = src.read(1)
     print('reading')
 
@@ -133,7 +129,7 @@ with rasterio.open("output.tin.tif") as src:
     if nodata_value is not None:
         elevation_data = np.where(elevation_data == nodata_value, np.nan, elevation_data)
 
-fig, ax = plt.subplots(1,1,figsize=(10,8))
+fig, ax = plt.subplots(1,1)
 
 ax.set_aspect("equal")
 gx, gy = np.gradient(elevation_data)

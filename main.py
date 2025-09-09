@@ -31,7 +31,7 @@ def d(current, point, weight):
     if not (point[0] in range(0,grad.shape[0]) and point[1] in range(0, grad.shape[1])):
         return 1000000000
     if np.isnan(grad[point][0]):
-        return 1000 * weight # should be hard to move into buildings
+        return 3000 * weight # should be hard to move into buildings
 
     vector = np.array((point[0] - current[0], point[1] - current[1]))
     # The normal force should contribute on downward slopes and hinder on upward slopes.
@@ -46,7 +46,6 @@ def h(it, goal):
 ACCEPTABLE_TIME = 15
 STEP = 8
 def a_star(start: tuple, goal: tuple, weight):
-    #h = lambda it: np.abs(goal[0] - it[0]) + np.abs( goal[1] - it[1])
     # ndarrays are tuples
     openSet = set([start])
     closedSet = set()
@@ -114,19 +113,17 @@ def a_star(start: tuple, goal: tuple, weight):
     return 
 
 
+def convert_from_epsg4326(p: tuple, crs_start):
+    return np.astype((np.array(rasterio.warp.transform("EPSG:4326", src.crs, [p[0]], [p[1]])).T - crs_start)[0] * (1, -1), np.int64)
 
+sp = (-81.0255, 33.9981)
+fp = (-81.0345025, 33.9932168)
 with rasterio.open("output.tin.tif") as src:
     print("file loaded")
     transform = src.transform
     start = (transform.c, transform.f)
     bounds = src.bounds
-    print(transform * (0,0))
-    #corners = rasterio.warp.transform_bounds(src.crs, "EPSG:4326", *bounds)
-    #max_lat, min_long = 34, -81.049
-    #min_lat, max_long = 33.981, -81.017
-    #bbox = rasterio.warp.transform_bounds("EPSG:4326", src.crs, min_long, min_lat, max_long, max_lat)
-    #window = windows.from_bounds(*bbox, transform=src.transform)
-
+    crs_start =  transform * (0,0)
     size = (transform.a, transform.e)
     print(start, size)
     elevation_data = src.read(1)
@@ -140,37 +137,29 @@ fig, ax = plt.subplots(1,1,figsize=(10,8))
 
 ax.set_aspect("equal")
 gx, gy = np.gradient(elevation_data)
-#gx, gy = ndimage.gaussian_filter(gx, sigma=1.0), ndimage.gaussian_filter(gy, sigma=1.0)
+gx, gy = ndimage.gaussian_filter((gx,gy), sigma=1.1)
 grad = np.array([gx,gy]) # arr of vectors
-pg = np.stack(grad[::-1], axis=-1)
-grad = pg
-#grad -= np.nanmin(grad)
-# picture = mpimg.imread('vector_map.png')
 picture = Image.open('vector_map.png').convert('L')
 mask = np.array(picture)
-mask = cv2.dilate(mask, np.ones((3,3), np.uint8), iterations=1)
-#grad = cv2.GaussianBlur(grad.astype(np.float32), (9, 9), 0)
+mask = cv2.dilate(mask, np.ones((3,3), np.uint8), iterations=2)
 mask_resized = cv2.resize(mask, (grad.shape[1], grad.shape[0]), interpolation=cv2.INTER_CUBIC)
 mask_bool = mask_resized > 128
 grad = np.where(mask_bool[..., np.newaxis], grad, [np.nan, np.nan])
-# grad = np.where(mask_resized < 128, grad, 0.00001)
-#extent = [bounds.left, bounds.right, bounds.bottom, bounds.top]
 extent = [0, grad.shape[0], 0, grad.shape[1]]
-#image = ax.imshow(elevation_data, extent = extent, norm=LogNorm(), origin='upper')
 print('not dead')
-start = (1400, 480)
-finish = (1250, 1305)
+start = convert_from_epsg4326(sp, crs_start)
+finish = convert_from_epsg4326(fp, crs_start)
 
 min_x, min_y = start
 max_x, max_y = finish
 
 path, t_score = a_star((max_y,max_x),(min_y,min_x) , WEIGHT)
 best_path = np.flip(np.array(path))
-print(best_path)
 dmin_x, dmin_y = best_path.min(axis=0)
 dmax_x, dmax_y = best_path.max(axis=0)
 min_x, min_y = np.astype(np.array((dmin_x, dmin_y)) * 0.85, np.int64)
 max_x, max_y = np.astype(np.array((dmax_x, dmax_y)) * 1.15, np.int64)
+
 
 data = np.linalg.norm(grad[min_y:max_y, min_x:max_x], axis=-1)
 image = ax.imshow(data, norm=LogNorm())
@@ -194,19 +183,6 @@ ax.quiver(start_points[:, 0], start_points[:, 1], direction[:, 0], direction[:, 
           angles='xy', 
           scale_units='xy', 
           scale=0.1)
-#lc = LineCollection(segments, linewidth=2, cmap='plasma')
-#lc.set_array(t_score)
-#ax.add_collection(lc)
-#ax.plot(x_coords, y_coords, linewidth=3, c=clrs)
-
-#x = np.linspace(0, extent[1]-1, 500, dtype=np.int32)
-#y = np.linspace(0, extent[3]-1, 500, dtype=np.int32)
-#X, Y = np.meshgrid(y,x)
-#grad = np.where(mask_bool[..., np.newaxis], grad, [-50,-50])
-#print(X,Y)
-#j = pg[(Y,X)][::-1] * 30
-print('not dead')
-#ax.quiver(X * 1.034,Y * 0.97, j[..., 0], j[..., 1], rasterized=True)
 
 cbar = fig.colorbar(image, ax=ax)
 

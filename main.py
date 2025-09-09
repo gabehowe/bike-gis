@@ -1,13 +1,21 @@
 import rasterio
+import rasterio.warp
+from rasterio.transform import from_bounds
+from rasterio import windows
 import numpy as np
+import matplotlib
+from matplotlib.collections import LineCollection
+matplotlib.use("module://matplotlib-backend-kitty")
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+import matplotlib.patches as patches
 from matplotlib.colors import LogNorm
 from scipy import ndimage
 import time
 import types
 import cv2
 from PIL import Image
+WEIGHT = 1
 
 
 def reconstruct_path(cameFrom: dict, current):
@@ -22,12 +30,16 @@ def reconstruct_path(cameFrom: dict, current):
 def d(current, point, weight):
     if not (point[0] in range(0,grad.shape[0]) and point[1] in range(0, grad.shape[1])):
         return 1000000000
-    if grad[point][0] == 10000:
-        print('in building')
-        return 1000000000000000
-    vector = (point[0] - current[0], point[1] - current[1])
-    rv =  grad[point] @ vector * weight
-    return max(rv + 50000, 0)
+    if np.isnan(grad[point][0]):
+        return 1000 * weight # should be hard to move into buildings
+
+    vector = np.array((point[0] - current[0], point[1] - current[1]))
+    # The normal force should contribute on downward slopes and hinder on upward slopes.
+    # Units are m/s^2 * kg * (m) = work
+    normal_force = vector @ -grad[point] * 9.81 * 80
+    required_horizontal_force = 80 * np.linalg.norm(vector) # = work (force time distance)
+    rv =  (required_horizontal_force + normal_force) * weight
+    return max( rv, 0)
 
 def h(it, goal):
     return np.hypot(*(goal[0] - it[0], goal[1] - it[1]))
@@ -42,9 +54,11 @@ def a_star(start: tuple, goal: tuple, weight):
     gScore = {} # default value of infinity
     gScore[start] = 0
     min_hv = np.inf
+    tScore = {} 
+    tScore[start] = 0
 
     fScore = {} # default value of infinity
-    fScore[start] = h(start, goal) * 0.01
+    fScore[start] = h(start, goal)
     hv = np.inf
     directions = [(x*STEP,y*STEP) for x in range(-1,2) for y in range(-1,2)]
     init_time = time.perf_counter_ns()
@@ -52,16 +66,20 @@ def a_star(start: tuple, goal: tuple, weight):
     while len(openSet) > 0:
 
         if min_hv <= 30:
-            return reconstruct_path(cameFrom, current)
+            rp = reconstruct_path(cameFrom, current)
+
+            return rp, [tScore[i] for i in rp]
         current = min(openSet, key=lambda x: fScore[x])
         ct = time.perf_counter_ns()
         if (ct-init_time) / 1_000_000_000 > ACCEPTABLE_TIME:
             weight *= 0.9
             init_time = ct
-        print(f'{len(closedSet) / grad.size:.2f}%, {min_hv:.1f}, {(ct-timer)/ 1_000_000:.2f}, {weight}, {(ct-init_time)/ 1_000_000_000:.1f}')
+        #print(f'{len(closedSet) / grad.size:.2f}%, {min_hv:.1f}, {(ct-timer)/ 1_000_000:.2f}, {weight}, {(ct-init_time)/ 1_000_000_000:.1f}')
         timer = ct
         if current == goal: 
-            return reconstruct_path(cameFrom, current)
+            rp = reconstruct_path(cameFrom, current)
+
+            return rp, [tScore[i] for i in rp]
         
         openSet.remove(current)
 
@@ -76,17 +94,19 @@ def a_star(start: tuple, goal: tuple, weight):
                 if neighbor not in gScore.keys():
                     gScore[neighbor] = np.inf
                 # d is edge weight
-                tentative_gScore = gScore[current] + d(current, neighbor, weight * STEP)
+                calc_gs =  d(current, neighbor, weight)
+                tentative_gScore = gScore[current] + calc_gs
                 
                 if tentative_gScore < gScore[neighbor]: # must act as infinity
                     cameFrom[neighbor] = current
                     gScore[neighbor] = tentative_gScore
+                    tScore[neighbor] = calc_gs
                     hv = h(neighbor, goal)
                     if hv < min_hv:
                         min_hv = hv
 
                     #print(hv, neighbor)
-                    fScore[neighbor] = tentative_gScore + hv * 0.01
+                    fScore[neighbor] = tentative_gScore + hv
                     if neighbor not in openSet:
                         #print("appended!", gScore[neighbor], old_gscore)
                         openSet.add(neighbor)
@@ -96,21 +116,31 @@ def a_star(start: tuple, goal: tuple, weight):
 
 
 with rasterio.open("output.tin.tif") as src:
+    print("file loaded")
     transform = src.transform
     start = (transform.c, transform.f)
     bounds = src.bounds
+    print(transform * (0,0))
+    #corners = rasterio.warp.transform_bounds(src.crs, "EPSG:4326", *bounds)
+    #max_lat, min_long = 34, -81.049
+    #min_lat, max_long = 33.981, -81.017
+    #bbox = rasterio.warp.transform_bounds("EPSG:4326", src.crs, min_long, min_lat, max_long, max_lat)
+    #window = windows.from_bounds(*bbox, transform=src.transform)
 
     size = (transform.a, transform.e)
     print(start, size)
     elevation_data = src.read(1)
+    print('reading')
 
-nodata_value = src.nodata
-if nodata_value is not None:
-    elevation_data = np.where(elevation_data == nodata_value, np.nan, elevation_data)
+    nodata_value = src.nodata
+    if nodata_value is not None:
+        elevation_data = np.where(elevation_data == nodata_value, np.nan, elevation_data)
 
 fig, ax = plt.subplots(1,1,figsize=(10,8))
-gx, gy = np.gradient(elevation_data, size[0], size[1])
-gx, gy = ndimage.gaussian_filter(gx, sigma=1.0), ndimage.gaussian_filter(gy, sigma=1.0)
+
+ax.set_aspect("equal")
+gx, gy = np.gradient(elevation_data)
+#gx, gy = ndimage.gaussian_filter(gx, sigma=1.0), ndimage.gaussian_filter(gy, sigma=1.0)
 grad = np.array([gx,gy]) # arr of vectors
 pg = np.stack(grad[::-1], axis=-1)
 grad = pg
@@ -122,28 +152,67 @@ mask = cv2.dilate(mask, np.ones((3,3), np.uint8), iterations=1)
 #grad = cv2.GaussianBlur(grad.astype(np.float32), (9, 9), 0)
 mask_resized = cv2.resize(mask, (grad.shape[1], grad.shape[0]), interpolation=cv2.INTER_CUBIC)
 mask_bool = mask_resized > 128
-grad = np.where(mask_bool[..., np.newaxis], grad, [-10000,-10000])
+grad = np.where(mask_bool[..., np.newaxis], grad, [np.nan, np.nan])
 # grad = np.where(mask_resized < 128, grad, 0.00001)
 #extent = [bounds.left, bounds.right, bounds.bottom, bounds.top]
 extent = [0, grad.shape[0], 0, grad.shape[1]]
 #image = ax.imshow(elevation_data, extent = extent, norm=LogNorm(), origin='upper')
-image = ax.imshow(np.linalg.norm(pg, axis=-1), extent = extent, norm=LogNorm(), origin='upper')
-# ax.imshow(picture, alpha=0.5, interpolation='nearest', extent=extent)
+print('not dead')
+start = (1400, 480)
+finish = (1250, 1305)
 
-best_path = np.array(a_star((1600,1700),(1320,780) , 2000))
-x_coords = best_path[:,0] / grad.shape[0] * (extent[1] - extent[0]) + extent[0]
-y_coords = best_path[:,1] / grad.shape[1] * (extent[3] - extent[2]) + extent[2]
-ax.scatter(x_coords, y_coords, s=50, marker='o')
+min_x, min_y = start
+max_x, max_y = finish
 
-x = np.linspace(0, extent[1]-1, 500, dtype=np.int32)
-y = np.linspace(0, extent[3]-1, 500, dtype=np.int32)
-X, Y = np.meshgrid(y,x)
-grad = np.where(mask_bool[..., np.newaxis], grad, [-50,-50])
-print(X,Y)
-j = pg[(Y,X)][::-1] * 30
-ax.quiver(X * 1.034,Y * 0.97, j[..., 0], j[..., 1])
+path, t_score = a_star((max_y,max_x),(min_y,min_x) , WEIGHT)
+best_path = np.flip(np.array(path))
+print(best_path)
+dmin_x, dmin_y = best_path.min(axis=0)
+dmax_x, dmax_y = best_path.max(axis=0)
+min_x, min_y = np.astype(np.array((dmin_x, dmin_y)) * 0.85, np.int64)
+max_x, max_y = np.astype(np.array((dmax_x, dmax_y)) * 1.15, np.int64)
+
+data = np.linalg.norm(grad[min_y:max_y, min_x:max_x], axis=-1)
+image = ax.imshow(data, norm=LogNorm())
+
+x_coords = (best_path[:,0])-min_x
+y_coords = (best_path[:,1])-min_y
+pts = np.array([x_coords, y_coords]).T.reshape(-1, 1, 2)
+
+segments = np.concatenate([pts[:-1], pts[1:]],axis=1)
+
+start_points  = segments[:, 0]
+end_points = segments[:, 1]
+diff = (end_points - start_points)
+direction = diff/np.linalg.norm(diff) * 12
+
+
+ax.quiver(start_points[:, 0], start_points[:, 1], direction[:, 0], direction[:, 1], 
+          np.nan_to_num(t_score[:-1], 1) - min(t_score) + 0.1,
+          cmap='plasma',
+          norm=LogNorm(vmin=1e-8),
+          angles='xy', 
+          scale_units='xy', 
+          scale=0.1)
+#lc = LineCollection(segments, linewidth=2, cmap='plasma')
+#lc.set_array(t_score)
+#ax.add_collection(lc)
+#ax.plot(x_coords, y_coords, linewidth=3, c=clrs)
+
+#x = np.linspace(0, extent[1]-1, 500, dtype=np.int32)
+#y = np.linspace(0, extent[3]-1, 500, dtype=np.int32)
+#X, Y = np.meshgrid(y,x)
+#grad = np.where(mask_bool[..., np.newaxis], grad, [-50,-50])
+#print(X,Y)
+#j = pg[(Y,X)][::-1] * 30
+print('not dead')
+#ax.quiver(X * 1.034,Y * 0.97, j[..., 0], j[..., 1], rasterized=True)
 
 cbar = fig.colorbar(image, ax=ax)
-ax.set_aspect("equal")
 
+print('about to show')
 plt.show()
+print(f"Len: {np.sum(np.linalg.norm(segments[:, :1] - segments[:, 1:], axis=-1)):.1f} m")
+print(f'Effort (80 kg * force * distance): {np.sum(t_score):.1f} J')
+print(f'Kilocalories: {np.sum(t_score)/4184}')
+print(f'Elevation Change: {(elevation_data[start] - elevation_data[finish]) * 6}')

@@ -121,20 +121,21 @@ fp = (-81.0345025, 33.9932168)
 with rasterio.open("output.tin.tif") as src:
     print("file loaded")
     transform = src.transform
+    start = (transform.c, transform.f)
     crs_start =  transform * (0,0)
     elevation_data = src.read(1)
-    print('reading')
 
     nodata_value = src.nodata
     if nodata_value is not None:
         elevation_data = np.where(elevation_data == nodata_value, np.nan, elevation_data)
 
-fig, ax = plt.subplots(1,1)
+fig, ax = plt.subplots(1,1,figsize=(10,8))
 
 ax.set_aspect("equal")
 gx, gy = np.gradient(elevation_data)
 gx, gy = ndimage.gaussian_filter((gx,gy), sigma=1.1)
 grad = np.array([gx,gy]) # arr of vectors
+grad = np.stack(grad[::-1], axis=-1)
 picture = Image.open('vector_map.png').convert('L')
 mask = np.array(picture)
 mask = cv2.dilate(mask, np.ones((3,3), np.uint8), iterations=2)
@@ -179,8 +180,6 @@ ax.quiver(start_points[:, 0], start_points[:, 1], direction[:, 0], direction[:, 
           angles='xy', 
           scale_units='xy', 
           scale=0.1)
-
-cbar = fig.colorbar(image, ax=ax)
 
 print('about to show')
 plt.show()

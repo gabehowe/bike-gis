@@ -13,7 +13,7 @@ from matplotlib.colors import LogNorm
 from scipy import ndimage
 import time
 import types
-from types import List, Tuple
+from typing import List, Tuple
 import cv2
 from PIL import Image
 
@@ -34,7 +34,7 @@ def reconstruct_path(cameFrom: dict, current: tuple):
         total_path.append(current)
     return total_path[::-1]
 
-def d(current: tuple, point: tuple, weight: float):
+def d(current: tuple, point: tuple, weight: float, grad: np.ndarray):
     """
     The edge weight function for a*. Determines move weight based on work against normal force required to move, i.e., will punish moving up hill and reward moving down hill.
 
@@ -65,7 +65,7 @@ def d(current: tuple, point: tuple, weight: float):
 def h(it, goal):
     return np.hypot(*(goal[0] - it[0], goal[1] - it[1]))
 
-def a_star(start: tuple, goal: tuple, weight: float,step=8, acceptable_time=15) -> Tuple[List[tuple], List[float]]:
+def a_star(start: tuple, goal: tuple, weight: float, grad: np.ndarray, step=8, acceptable_time=15) -> Tuple[List[tuple], List[float]]:
     """
     Implementation of the a* pathing algorithm with reducing weight after exceeding a time limit.
 
@@ -130,7 +130,7 @@ def a_star(start: tuple, goal: tuple, weight: float,step=8, acceptable_time=15) 
                 if neighbor not in gScore.keys():
                     gScore[neighbor] = np.inf
                 # d is edge weight
-                calc_gs =  d(current, neighbor, weight)
+                calc_gs =  d(current, neighbor, weight, grad)
                 tentative_gScore = gScore[current] + calc_gs
                 
                 if tentative_gScore < gScore[neighbor]: # must act as infinity
@@ -185,7 +185,7 @@ def find_lowest_energy_path(sp: tuple, fp: tuple, weight: float):
         if nodata_value is not None:
             elevation_data = np.where(elevation_data == nodata_value, np.nan, elevation_data)
 
-    fig, ax = plt.subplots(1,1,figsize=(10,8))
+    fig, ax = plt.subplots(1,1)
 
     ax.set_aspect("equal")
     # get gradient (slope)
@@ -205,7 +205,7 @@ def find_lowest_energy_path(sp: tuple, fp: tuple, weight: float):
     start = convert_from_epsg4326(sp, crs_start, src.crs)
     finish = convert_from_epsg4326(fp, crs_start, src.crs)
 
-    path, t_score = a_star(tuple(np.flip(finish)),tuple(np.flip(start)), weight)
+    path, t_score = a_star(tuple(np.flip(finish)),tuple(np.flip(start)), weight, grad)
     best_path = np.flip(np.array(path))
     # Get real min and max for framing
     dmin_x, dmin_y = best_path.min(axis=0)
@@ -214,7 +214,7 @@ def find_lowest_energy_path(sp: tuple, fp: tuple, weight: float):
     FRAMING_EXPANSION = 0.15
     min_x, min_y = np.astype(np.array((dmin_x, dmin_y)) * (1-FRAMING_EXPANSION), np.int64)
     max_x, max_y = np.astype(np.array((dmax_x, dmax_y)) * (1+FRAMING_EXPANSION), np.int64)
-
+    
 
     # Magnitude of the gradient at every point to color.
     data = np.linalg.norm(grad[min_y:max_y, min_x:max_x], axis=-1)
@@ -243,6 +243,7 @@ def find_lowest_energy_path(sp: tuple, fp: tuple, weight: float):
               scale_units='xy', 
               scale=0.1)
 
+    plt.savefig("out.png")
     plt.show()
     # Trip info
     print(f"Len: {np.sum(np.linalg.norm(segments[:, :1] - segments[:, 1:], axis=-1)):.1f} m")
@@ -253,6 +254,7 @@ def find_lowest_energy_path(sp: tuple, fp: tuple, weight: float):
 
 
 start = (-81.0255, 33.9981)
-finish = (-81.0345025, 33.9932168)
+
+finish = (-81.023537, 33.991030)
 weight = 1
 find_lowest_energy_path(start,finish, weight)
